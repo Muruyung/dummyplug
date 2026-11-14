@@ -166,6 +166,18 @@ function contextText(message) {
   return message.content.find((part) => typeof part?.text === 'string' && part.text.startsWith('# Context\n'))?.text ?? '(no context block)';
 }
 
+// Vizier's placeholder for a tool output pruned from the model's view (vizier spec 060).
+const PRUNED = /^\[output pruned \((.+?)\) - use recall_history\("(.+?)"\) to recall\]$/u;
+
+// §7: every pruned tool result in the request, in order.
+function prunedText(messages) {
+  const lines = messages.filter((message) => message?.role === 'tool').flatMap((message) => {
+    const match = PRUNED.exec(textContent(message.content).trim());
+    return match ? [`- ${message.tool_call_id ?? ''} ${match[2]} ${match[1]}`] : [];
+  });
+  return lines.length ? `${lines.length} pruned:\n${lines.join('\n')}` : '(nothing pruned)';
+}
+
 function parseToolCommand(text, tools) {
   let parsed;
   try {
@@ -200,6 +212,7 @@ export function complete(messages, toolDefinitions) {
   const text = commandText(userMessage);
   if (text.toLowerCase() === 'tools') return { role: 'assistant', content: toolList(tools) };
   if (text.toLowerCase() === 'context') return { role: 'assistant', content: contextText(userMessage) };
+  if (text.toLowerCase() === 'pruned') return { role: 'assistant', content: prunedText(messages) };
   const exactTool = tools.find((tool) => tool.name === text);
   if (exactTool) return { role: 'assistant', content: toolSample(exactTool) };
   if (text.startsWith('{')) {
