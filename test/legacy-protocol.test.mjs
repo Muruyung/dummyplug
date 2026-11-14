@@ -78,3 +78,16 @@ test('an empty say is the same as none, and a non-string say is a text reply', (
   assert.equal(complete([{ role: 'user', content: '{"say":"","tool":"echo"}' }], [functionTool()]).content, null);
   assert.match(complete([{ role: 'user', content: '{"say":1,"tool":"echo"}' }], [functionTool()]).content, /^Invalid tool request: `say` must be a string/u);
 });
+
+test('pruned lists the pruned tool results the request carried, in order', () => {
+  const call = (id) => ({ role: 'assistant', content: null, tool_calls: [{ id, type: 'function', function: { name: 'execute_python', arguments: '{}' } }] });
+  const messages = [
+    call('c1'), { role: 'tool', tool_call_id: 'c1', content: '[output pruned (74.3 KB) - use recall_history("h-1") to recall]' },
+    call('c2'), { role: 'tool', tool_call_id: 'c2', content: '{"ok":true}' },
+    call('c3'), { role: 'tool', tool_call_id: 'c3', content: [{ type: 'text', text: '[output pruned (1.2 MB) - use recall_history("h-3") to recall]' }] },
+    { role: 'assistant', content: 'done' },
+    { role: 'user', content: 'pruned' },
+  ];
+  assert.equal(complete(messages, []).content, '2 pruned:\n- c1 h-1 74.3 KB\n- c3 h-3 1.2 MB');
+  assert.equal(complete([{ role: 'user', content: ' Pruned ' }], []).content, '(nothing pruned)');
+});
