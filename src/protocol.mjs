@@ -178,6 +178,17 @@ function prunedText(messages) {
   return lines.length ? `${lines.length} pruned:\n${lines.join('\n')}` : '(nothing pruned)';
 }
 
+// §3 `delay_ms` (vizier spec 062): how long to wait before answering, so a test can send a message
+// while the turn is busy.
+const MAX_DELAY_MS = 10_000;
+
+function delayOf(parsed) {
+  if (!Object.hasOwn(parsed, 'delay_ms')) return { ok: true, delayMs: 0 };
+  const value = parsed.delay_ms;
+  if (!Number.isInteger(value) || value < 0 || value > MAX_DELAY_MS) return { ok: false };
+  return { ok: true, delayMs: value };
+}
+
 function parseToolCommand(text, tools) {
   let parsed;
   try {
@@ -187,19 +198,62 @@ function parseToolCommand(text, tools) {
   }
   const invalid = (reason) => ({ content: `Invalid tool request: ${reason}\n\n${TOOL_REQUEST_SHAPE}` });
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return invalid('expected a JSON object');
+  const delay = delayOf(parsed);
+  if (!delay.ok) return invalid(`delay_ms must be an integer from 0 to ${MAX_DELAY_MS}`);
+  if (Object.hasOwn(parsed, 'say') && typeof parsed.say !== 'string') return invalid('`say` must be a string');
+  // With a delay and no tool: a final answer after the wait, so a busy turn with no round boundary.
+  if (!Object.hasOwn(parsed, 'tool') && Object.hasOwn(parsed, 'delay_ms')) {
+    return { content: parsed.say ?? '', delayMs: delay.delayMs };
+  }
   if (!Object.hasOwn(parsed, 'tool')) return invalid('missing `tool`');
   if (typeof parsed.tool !== 'string') return invalid('`tool` must be a string');
   if (Object.hasOwn(parsed, 'arguments') && (!parsed.arguments || typeof parsed.arguments !== 'object' || Array.isArray(parsed.arguments))) {
     return invalid('`arguments` must be an object');
   }
-  if (Object.hasOwn(parsed, 'say') && typeof parsed.say !== 'string') return invalid('`say` must be a string');
   if (!tools.some((tool) => tool.name === parsed.tool)) {
     return { content: `Unknown tool \`${parsed.tool}\`. Send \`tools\` to list available tools.` };
   }
-  return { say: parsed.say || null, toolCall: { id: `dummyplug-${randomUUID()}`, type: 'function', function: {
+  return { say: parsed.say || null, delayMs: delay.delayMs, toolCall: { id: `dummyplug-${randomUUID()}`, type: 'function', function: {
     name: parsed.tool,
     arguments: JSON.stringify(parsed.arguments ?? {}),
   } } };
+}
+
+// §8 (vizier spec 062): a user message right after tool results is what a running turn read at a
+// round boundary: messages sent while it worked, and finished background work. Only parts that
+// carry Vizier's frontmatter count, so a plain note such as "[Images loaded …]" is unchanged.
+function midTurnText(messages) {
+  const last = messages.at(-1);
+  if (last?.role !== 'user' || messages.at(-2)?.role !== 'tool') return null;
+  const parts = typeof last.content === 'string'
+    ? [last.content]
+    : (Array.isArray(last.content) ? last.content : [])
+      .filter((part) => typeof part?.text === 'string' && !part.text.startsWith('# Context\n'))
+      .map((part) => part.text);
+  const read = parts.filter((part) => validFrontmatter(part));
+  if (read.length === 0) return null;
+  const lines = read.map((part) => {
+    const text = commandText({ role: 'user', content: part });
+    return /^sender:\s*background\s*$/mu.test(part.split(/\r?\n---/u, 1)[0]) ? `background: ${text}` : text;
+  });
+  return `**Read mid-turn**:\n${lines.join('\n')}`;
+}
+
+// How long to wait before answering this request (§3 `delay_ms`): only when the request's newest
+// message is the person's run request, never while tool results are being answered.
+export function completionDelay(request) {
+  const messages = request?.messages ?? [];
+  if (lastToolResults(messages) !== null || midTurnText(messages) !== null) return 0;
+  const text = commandText(messages.at(-1));
+  if (!text.startsWith('{')) return 0;
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return 0;
+    const delay = delayOf(parsed);
+    return delay.ok ? delay.delayMs : 0;
+  } catch {
+    return 0;
+  }
 }
 
 export function complete(messages, toolDefinitions) {
@@ -207,6 +261,8 @@ export function complete(messages, toolDefinitions) {
     .map((tool) => ({ name: tool.function.name, description: tool.function.description ?? '', parameters: tool.function.parameters ?? {} }));
   const results = lastToolResults(messages);
   if (results !== null) return { role: 'assistant', content: results };
+  const read = midTurnText(messages);
+  if (read !== null) return { role: 'assistant', content: read };
 
   const userMessage = messages.at(-1);
   const text = commandText(userMessage);

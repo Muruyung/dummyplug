@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { completionResponse, streamChunks } from './protocol.mjs';
+import { completionDelay, completionResponse, streamChunks } from './protocol.mjs';
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
@@ -104,6 +104,8 @@ export function createAppServer() {
     }
 
     const completion = completionResponse(body);
+    const delay = completionDelay(body);
+    if (delay > 0) await new Promise((done) => setTimeout(done, delay));
     if (body.stream === true) {
       await writeSse(response, body, completion);
       return;
