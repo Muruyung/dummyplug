@@ -53,6 +53,19 @@ test('§8 lists what a running turn read at its round boundary, in order', () =>
   );
 });
 
+test('a request of its own after a tool result still runs: only marked parts are mid-turn reads', () => {
+  // A new turn can load history before the last reply is saved, so its request follows a tool result.
+  const tools = [functionTool()];
+  const reply = complete([
+    { role: 'user', content: '{"tool":"echo"}' },
+    call('c1'),
+    { role: 'tool', tool_call_id: 'c1', content: 'ok' },
+    { role: 'user', content: `${frontmatter('dana')}tools` },
+  ], tools);
+  assert.doesNotMatch(reply.content, /Read mid-turn/u);
+  assert.match(reply.content, /echo/u);
+});
+
 test('a plain note after tool results is not a mid-turn read', () => {
   const reply = complete([
     { role: 'user', content: '{"tool":"echo"}' },

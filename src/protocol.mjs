@@ -220,8 +220,10 @@ function parseToolCommand(text, tools) {
 }
 
 // §8 (vizier spec 062): a user message right after tool results is what a running turn read at a
-// round boundary: messages sent while it worked, and finished background work. Only parts that
-// carry Vizier's frontmatter count, so a plain note such as "[Images loaded …]" is unchanged.
+// round boundary: messages sent while it worked (`via: mid_turn`) and finished background work
+// (`sender: background`). Only parts marked that way count. Position alone is not enough: a new
+// turn can load its history before the last turn's reply is saved, so its own request may follow a
+// tool result, and it must still run as a request.
 function midTurnText(messages) {
   const last = messages.at(-1);
   if (last?.role !== 'user' || messages.at(-2)?.role !== 'tool') return null;
@@ -230,11 +232,14 @@ function midTurnText(messages) {
     : (Array.isArray(last.content) ? last.content : [])
       .filter((part) => typeof part?.text === 'string' && !part.text.startsWith('# Context\n'))
       .map((part) => part.text);
-  const read = parts.filter((part) => validFrontmatter(part));
+  const head = (part) => part.split(/\r?\n---/u, 1)[0];
+  const background = (part) => /^sender:\s*background\s*$/mu.test(head(part));
+  const midTurn = (part) => /^via:\s*mid_turn\s*$/mu.test(head(part));
+  const read = parts.filter((part) => validFrontmatter(part) && (background(part) || midTurn(part)));
   if (read.length === 0) return null;
   const lines = read.map((part) => {
     const text = commandText({ role: 'user', content: part });
-    return /^sender:\s*background\s*$/mu.test(part.split(/\r?\n---/u, 1)[0]) ? `background: ${text}` : text;
+    return background(part) ? `background: ${text}` : text;
   });
   return `**Read mid-turn**:\n${lines.join('\n')}`;
 }
